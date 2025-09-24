@@ -1,79 +1,145 @@
 # app.py
 """
-One-Time Voter App (single-file)
-- Buttons: ✅ and ❌
-- User can vote only once per browser session (stored in st.session_state)
-- Reset (🔁) clears global counters AND unlocks the current browser/session
-- Shows total votes, percentages, and a progress bar
+One-Time Voter App (shared global counts)
+- Global counts are stored in SQLite (votes.db) so all users see same totals
+- Each browser session can vote only once (st.session_state.voted)
+- Reset clears global counts and also unlocks the current session
 Run: streamlit run app.py
 """
 
+import sqlite3
 import streamlit as st
+from pathlib import Path
+from datetime import datetime
 
-st.set_page_config(page_title="One-Time Voter", layout="centered")
+DB_PATH = Path("votes.db")
 
-st.title("✅ ❌ One-Time Voter App")
+# --- DB helpers ---
+def init_db():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS counters (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                yes INTEGER NOT NULL DEFAULT 0,
+                no INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT
+            );
+            """
+        )
+        # Ensure single row exists with id=1
+        cur.execute("INSERT OR IGNORE INTO counters (id, yes, no, updated_at) VALUES (1, 0, 0, ?)",
+                    (datetime.utcnow().isoformat(),))
+        conn.commit()
+    finally:
+        conn.close()
 
-# --- Initialize session state keys safely ---
-st.session_state.setdefault("yes", 0)
-st.session_state.setdefault("no", 0)
-st.session_state.setdefault("voted", False)         # boolean: has this browser/session voted?
-st.session_state.setdefault("voted_choice", None)   # "yes" or "no" (optional informative)
+def get_counts():
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT yes, no FROM counters WHERE id = 1")
+        row = cur.fetchone()
+        if row:
+            return row[0], row[1]
+        return 0, 0
+    finally:
+        conn.close()
 
-# Guarantee we use a boolean for disabling widgets
+def increment_yes():
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE counters SET yes = yes + 1, updated_at = ? WHERE id = 1", (datetime.utcnow().isoformat(),))
+        conn.commit()
+    finally:
+        conn.close()
+
+def increment_no():
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE counters SET no = no + 1, updated_at = ? WHERE id = 1", (datetime.utcnow().isoformat(),))
+        conn.commit()
+    finally:
+        conn.close()
+
+def reset_counts():
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE counters SET yes = 0, no = 0, updated_at = ? WHERE id = 1", (datetime.utcnow().isoformat(),))
+        conn.commit()
+    finally:
+        conn.close()
+
+# Initialize DB on app start
+init_db()
+
+# --- Streamlit UI ---
+st.set_page_config(page_title="One-Time Voter (shared)", layout="centered")
+st.title("✅ ❌ One-Time Voter App (shared counts)")
+
+# Initialize local session flags (per browser)
+st.session_state.setdefault("voted", False)
+st.session_state.setdefault("voted_choice", None)
+
 has_voted = bool(st.session_state.get("voted", False))
 
-# --- Voting layout ---
+# Read global counts from DB (fresh each run)
+yes_count, no_count = get_counts()
+
+# Voting layout
 col1, col2, col3 = st.columns([1, 1, 1])
 
 with col1:
     if st.button("✅", disabled=has_voted):
-        st.session_state.yes += 1
+        # update global DB
+        increment_yes()
+        # set local lock
         st.session_state.voted = True
         st.session_state.voted_choice = "yes"
-        st.rerun()
-    st.metric("Yes", st.session_state.yes)
+        st.experimental_rerun() if hasattr(st, "experimental_rerun") else st.rerun()
+    st.metric("Yes", yes_count)
 
 with col2:
     if st.button("❌", disabled=has_voted):
-        st.session_state.no += 1
+        increment_no()
         st.session_state.voted = True
         st.session_state.voted_choice = "no"
-        st.rerun()
-    st.metric("No", st.session_state.no)
+        st.experimental_rerun() if hasattr(st, "experimental_rerun") else st.rerun()
+    st.metric("No", no_count)
 
 with col3:
-    # This Reset clears counters AND unlocks the current browser/session
-    if st.button("🔁 Reset counts"):
-        # clear global counters
-        st.session_state.yes = 0
-        st.session_state.no = 0
-        # unlock this browser/session so the user can vote again
+    if st.button("🔁 Reset counts & unlock my session"):
+        reset_counts()
+        # unlock this browser session so dev/testers can vote again
         st.session_state.voted = False
         st.session_state.voted_choice = None
-        # refresh UI immediately
-        st.rerun()
+        st.experimental_rerun() if hasattr(st, "experimental_rerun") else st.rerun()
 
 st.markdown("---")
 
-# --- Totals, percentages, progress bar ---
-total_votes = st.session_state.yes + st.session_state.no
+# Read fresh counts after any possible update (since we rerun after button clicks)
+yes_count, no_count = get_counts()
+total_votes = yes_count + no_count
 
 if total_votes > 0:
-    yes_pct = (st.session_state.yes / total_votes) * 100
-    no_pct = (st.session_state.no / total_votes) * 100
-
+    yes_pct = (yes_count / total_votes) * 100
+    no_pct = (no_count / total_votes) * 100
     st.subheader(f"📊 Total Votes: {total_votes}")
-    # progress shows proportion of YES (0-100)
     st.progress(min(max(int(round(yes_pct)), 0), 100))
-    st.write(f"✅ Yes: **{st.session_state.yes}** ({yes_pct:.1f}%)")
-    st.write(f"❌ No: **{st.session_state.no}** ({no_pct:.1f}%)")
+    st.write(f"✅ Yes: **{yes_count}** ({yes_pct:.1f}%)")
+    st.write(f"❌ No: **{no_count}** ({no_pct:.1f}%)")
 else:
     st.subheader("📊 No votes yet")
 
 st.markdown("---")
 
-# --- Feedback to the user about their vote state ---
+# Feedback about user's vote state
 if has_voted:
     picked = st.session_state.get("voted_choice")
     if picked == "yes":
@@ -85,5 +151,6 @@ if has_voted:
 else:
     st.info("You can vote only once. After voting the buttons will be disabled for you.")
 
-# Optional debug (uncomment to inspect session_state)
-# st.write(dict(st.session_state))
+# Optional: debug view
+# st.write("Session state:", dict(st.session_state))
+# st.write("DB counts:", dict(yes=yes_count, no=no_count))
