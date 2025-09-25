@@ -1,18 +1,16 @@
 # app.py
 """
-One-Time Voter (Redis-backed counters)
-- Global counts := Redis keys "votes:yes" and "votes:no"
-- Per-browser lock := st.session_state.voted (local only)
-- Reset clears Redis counters and unlocks the current browser session
-Run: streamlit run app.py
+One-Time Voter (Redis-backed, Live Counter)
+- Global counts stored in Redis
+- Per-browser lock so each user can only vote once
+- Live auto-refresh of counters (every 2 seconds)
 """
 
 import streamlit as st
 import redis
 
 # ---------- Redis connection ----------
-REDIS_URL = "redis://34.227.103.50:6379"   # <-- your Redis instance
-
+REDIS_URL = "redis://34.227.103.50:6379"   # your Redis instance
 r = redis.from_url(REDIS_URL, decode_responses=True)
 
 YES_KEY = "votes:yes"
@@ -25,16 +23,29 @@ if r.get(NO_KEY) is None:
     r.set(NO_KEY, 0)
 
 # ---------- Streamlit UI ----------
-st.set_page_config(page_title="One-Time Voter (Redis)", layout="centered")
-st.title("✅ ❌ One-Time Voter App (Redis-backed)")
+st.set_page_config(page_title="Live Voter (Redis)", layout="centered")
+
+# Auto-refresh every 2 seconds
+st_autorefresh = st.experimental_singleton if hasattr(st, "experimental_singleton") else None
+st_autorefresh = st_autorefresh  # to silence lint
+
+st_autorefresh = st_autorefresh  # no-op placeholder
+
+# In new versions, use st_autorefresh
+st_autorefresh = st_autorefresh
+
+# Try Streamlit built-in autorefresh
+from streamlit_autorefresh import st_autorefresh
+st_autorefresh(interval=2000, key="refresh_counter")
+
+st.title("✅ ❌ One-Time Voter (Live Counter)")
 
 # local/session flags
 st.session_state.setdefault("voted", False)
 st.session_state.setdefault("voted_choice", None)
-
 has_voted = bool(st.session_state.get("voted", False))
 
-# read global counts from Redis
+# read counts
 def get_counts():
     yes = int(r.get(YES_KEY) or 0)
     no = int(r.get(NO_KEY) or 0)
@@ -70,7 +81,7 @@ with col3:
 
 st.markdown("---")
 
-# fresh counts
+# fresh counts after any update
 yes_count, no_count = get_counts()
 total_votes = yes_count + no_count
 
