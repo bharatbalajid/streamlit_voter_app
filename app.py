@@ -77,7 +77,7 @@ with col2:
     st.metric("No", no_count)
 
 with col3:
-    if st.button("🔁 Reset counts (global)"):
+    if st.button("🔁 Reset"):
         # clear Redis counters
         r.set(YES_KEY, 0)
         r.set(NO_KEY, 0)
