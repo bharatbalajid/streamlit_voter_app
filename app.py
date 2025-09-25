@@ -1,13 +1,15 @@
 # app.py
 """
-One-Time Voter (Redis-backed, Live Counter)
+One-Time Voter (Redis-backed, Live Counter, Global Reset)
 - Global counts stored in Redis
-- Per-browser lock so each user can only vote once
-- Live auto-refresh of counters (every 2 seconds)
+- Per-browser lock for one-time voting
+- Reset clears Redis counters AND globally unlocks all users via a reset_version key
+- Live auto-refresh (every 2s) keeps everyone in sync
 """
 
 import streamlit as st
 import redis
+from streamlit_autorefresh import st_autorefresh
 
 # ---------- Redis connection ----------
 REDIS_URL = "redis://34.227.103.50:6379"   # your Redis instance
@@ -15,37 +17,40 @@ r = redis.from_url(REDIS_URL, decode_responses=True)
 
 YES_KEY = "votes:yes"
 NO_KEY = "votes:no"
+RESET_KEY = "votes:reset_version"
 
 # ensure keys exist
 if r.get(YES_KEY) is None:
     r.set(YES_KEY, 0)
 if r.get(NO_KEY) is None:
     r.set(NO_KEY, 0)
+if r.get(RESET_KEY) is None:
+    r.set(RESET_KEY, 0)
 
 # ---------- Streamlit UI ----------
 st.set_page_config(page_title="Live Voter (Redis)", layout="centered")
 
-# Auto-refresh every 2 seconds
-st_autorefresh = st.experimental_singleton if hasattr(st, "experimental_singleton") else None
-st_autorefresh = st_autorefresh  # to silence lint
-
-st_autorefresh = st_autorefresh  # no-op placeholder
-
-# In new versions, use st_autorefresh
-st_autorefresh = st_autorefresh
-
-# Try Streamlit built-in autorefresh
-from streamlit_autorefresh import st_autorefresh
+# auto-refresh every 2 seconds
 st_autorefresh(interval=2000, key="refresh_counter")
 
-st.title("✅ ❌ One-Time Voter (Live Counter)")
+st.title("✅ ❌ One-Time Voter App (Redis-backed, Global Reset)")
 
 # local/session flags
 st.session_state.setdefault("voted", False)
 st.session_state.setdefault("voted_choice", None)
+st.session_state.setdefault("last_reset_version", 0)
+
+# check global reset version
+current_reset_version = int(r.get(RESET_KEY) or 0)
+if current_reset_version > st.session_state.last_reset_version:
+    # a reset happened globally → unlock this browser session
+    st.session_state.voted = False
+    st.session_state.voted_choice = None
+    st.session_state.last_reset_version = current_reset_version
+
 has_voted = bool(st.session_state.get("voted", False))
 
-# read counts
+# helpers
 def get_counts():
     yes = int(r.get(YES_KEY) or 0)
     no = int(r.get(NO_KEY) or 0)
@@ -72,16 +77,21 @@ with col2:
     st.metric("No", no_count)
 
 with col3:
-    if st.button("🔁 Reset counts & unlock my session"):
+    if st.button("🔁 Reset counts (global)"):
+        # clear Redis counters
         r.set(YES_KEY, 0)
         r.set(NO_KEY, 0)
+        # bump reset version so all users auto-unlock
+        r.incr(RESET_KEY)
+        # also unlock this session right away
         st.session_state.voted = False
         st.session_state.voted_choice = None
+        st.session_state.last_reset_version = int(r.get(RESET_KEY))
         st.rerun()
 
 st.markdown("---")
 
-# fresh counts after any update
+# fresh counts
 yes_count, no_count = get_counts()
 total_votes = yes_count + no_count
 
