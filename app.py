@@ -33,7 +33,7 @@ st.set_page_config(page_title="Live Voter (Redis)", layout="centered")
 # auto-refresh every 2 seconds
 st_autorefresh(interval=2000, key="refresh_counter")
 
-st.title("✅ ❌ One-Time Voter App (Redis-backed, Global Reset)")
+st.title("Voter App")
 
 # local/session flags
 st.session_state.setdefault("voted", False)
