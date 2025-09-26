@@ -1,33 +1,24 @@
 # app.py
 """
-One-Time Voter (Redis-backed, Live Counter, Global Reset)
-- Global counts stored in Redis
-- Per-browser lock for one-time voting
-- Reset clears Redis counters AND globally unlocks all users via a reset_version key
-- Live auto-refresh (every 2s) keeps everyone in sync
-
-Enhancements:
-- Ask for voter's name initially and store it in session_state
-- Show votes in a table format per user with YES/NO columns
-- Store each voter's choice in Redis hash (votes:names)
-- Two reset buttons:
-    * "Reset Counts" — resets only the yes/no counters and unlocks everyone, keeps names
-    * "Reset All (counts + unlock everyone)" — resets counts, bumps reset_version, clears names, unlocks everyone
+Streamlit one-time voter app (Redis-backed)
+- When name is set it creates an entry immediately (choice='none')
+- Voting updates counts and the stored per-name choice (handles switching vote)
+- Reset Counts: zeros numeric counters, sets all names -> 'none', bumps reset_version (everyone unlocked)
+- Reset ALL: full wipe (counts + names) and unlock everyone
 """
-
 import streamlit as st
 import redis
 import pandas as pd
 from streamlit_autorefresh import st_autorefresh
 
 # ---------- Redis connection ----------
-REDIS_URL = "redis://34.227.103.50:6379"   # your Redis instance
+REDIS_URL = "redis://34.227.103.50:6379"   # update if needed
 r = redis.from_url(REDIS_URL, decode_responses=True)
 
 YES_KEY = "votes:yes"
 NO_KEY = "votes:no"
 RESET_KEY = "votes:reset_version"
-NAMES_HASH_KEY = "votes:names"  # hash: {name: choice}
+NAMES_HASH_KEY = "votes:names"  # hash: {name: choice} where choice in {"yes","no","none"}
 
 # ensure keys exist
 if r.get(YES_KEY) is None:
@@ -39,7 +30,6 @@ if r.get(RESET_KEY) is None:
 
 # ---------- Streamlit UI ----------
 st.set_page_config(page_title="Live Voter (Redis)", layout="centered")
-
 # auto-refresh every 2 seconds
 st_autorefresh(interval=2000, key="refresh_counter")
 
@@ -52,6 +42,7 @@ st.session_state.setdefault("last_reset_version", 0)
 st.session_state.setdefault("voter_name", "")
 
 # ---------- Name input ----------
+# If a user sets their name, create an entry in Redis immediately with choice 'none'
 if not st.session_state.voter_name:
     name_col1, name_col2 = st.columns([3, 1])
     with name_col1:
@@ -59,14 +50,21 @@ if not st.session_state.voter_name:
     with name_col2:
         if st.button("Set Name"):
             if name_input and name_input.strip():
-                st.session_state.voter_name = name_input.strip()
+                cleaned = name_input.strip()
+                st.session_state.voter_name = cleaned
+                # create user in Redis with no vote yet so they appear in the table
+                r.hset(NAMES_HASH_KEY, cleaned, "none")
+                # sync reset_version to avoid an immediate unexpected unlock state
+                st.session_state.voted = False
+                st.session_state.voted_choice = None
+                st.session_state.last_reset_version = int(r.get(RESET_KEY) or 0)
                 st.rerun()
             else:
                 st.warning("Please type a valid name before setting it.")
 else:
     st.markdown(f"**Hello — {st.session_state.voter_name}**")
 
-# check global reset version
+# check global reset version (auto-unlock if bumped)
 current_reset_version = int(r.get(RESET_KEY) or 0)
 if current_reset_version > st.session_state.last_reset_version:
     st.session_state.voted = False
@@ -81,12 +79,37 @@ def get_counts_and_table():
     no = int(r.get(NO_KEY) or 0)
     names_data = r.hgetall(NAMES_HASH_KEY) or {}
     rows = []
-    for name, choice in names_data.items():
+    for name in sorted(names_data.keys()):
+        choice = names_data.get(name)
         yes_val = 1 if choice == "yes" else 0
         no_val = 1 if choice == "no" else 0
         rows.append({"Name": name, "YES": yes_val, "NO": no_val})
     df = pd.DataFrame(rows)
     return yes, no, df
+
+# voting helper that handles switching votes
+def cast_vote(name: str, new_choice: str):
+    if not name:
+        return
+    # read previous choice
+    prev = r.hget(NAMES_HASH_KEY, name) or "none"
+    # if same choice, don't change counts (but still consider them voted)
+    if prev == new_choice:
+        return
+    pipe = r.pipeline()
+    # decrement previous, if any
+    if prev == "yes":
+        pipe.decr(YES_KEY)
+    elif prev == "no":
+        pipe.decr(NO_KEY)
+    # increment new
+    if new_choice == "yes":
+        pipe.incr(YES_KEY)
+    elif new_choice == "no":
+        pipe.incr(NO_KEY)
+    # set new choice for name
+    pipe.hset(NAMES_HASH_KEY, name, new_choice)
+    pipe.execute()
 
 yes_count, no_count, votes_df = get_counts_and_table()
 total_votes = yes_count + no_count
@@ -98,8 +121,8 @@ col1, col2, col3 = st.columns([1, 1, 1])
 
 with col1:
     if st.button("✅", disabled=has_voted or not st.session_state.voter_name):
-        r.incr(YES_KEY)
-        r.hset(NAMES_HASH_KEY, st.session_state.voter_name, "yes")
+        # cast vote (this will decrement previous if switching)
+        cast_vote(st.session_state.voter_name, "yes")
         st.session_state.voted = True
         st.session_state.voted_choice = "yes"
         st.session_state.last_reset_version = int(r.get(RESET_KEY) or 0)
@@ -108,8 +131,7 @@ with col1:
 
 with col2:
     if st.button("❌", disabled=has_voted or not st.session_state.voter_name):
-        r.incr(NO_KEY)
-        r.hset(NAMES_HASH_KEY, st.session_state.voter_name, "no")
+        cast_vote(st.session_state.voter_name, "no")
         st.session_state.voted = True
         st.session_state.voted_choice = "no"
         st.session_state.last_reset_version = int(r.get(RESET_KEY) or 0)
@@ -118,13 +140,17 @@ with col2:
 
 with col3:
     if st.button("🔄 Reset Counts"):
+        # reset numeric counters to 0 and set each stored name to 'none' so they remain visible
         r.set(YES_KEY, 0)
         r.set(NO_KEY, 0)
         existing = r.hgetall(NAMES_HASH_KEY) or {}
         if existing:
             for n in existing.keys():
                 r.hset(NAMES_HASH_KEY, n, "none")
-        r.incr(RESET_KEY)
+        # bump reset version to unlock everyone across browsers
+        new_reset = r.incr(RESET_KEY)
+        # update this session's last_reset_version to the new value
+        st.session_state.last_reset_version = int(new_reset)
         st.session_state.voted = False
         st.session_state.voted_choice = None
         st.success("Counts have been reset and everyone is unlocked (names preserved).")
@@ -134,10 +160,10 @@ with col3:
         r.set(YES_KEY, 0)
         r.set(NO_KEY, 0)
         r.delete(NAMES_HASH_KEY)
-        r.incr(RESET_KEY)
+        new_reset = r.incr(RESET_KEY)
         st.session_state.voted = False
         st.session_state.voted_choice = None
-        st.session_state.last_reset_version = int(r.get(RESET_KEY))
+        st.session_state.last_reset_version = int(new_reset)
         st.session_state.voter_name = ""
         if "voter_name_input" in st.session_state:
             del st.session_state["voter_name_input"]
@@ -147,6 +173,7 @@ with col3:
 st.markdown("---")
 
 # Display votes table
+yes_count, no_count, votes_df = get_counts_and_table()
 if not votes_df.empty:
     totals = {"Name": "TOTAL", "YES": yes_count, "NO": no_count}
     votes_df = pd.concat([votes_df, pd.DataFrame([totals])], ignore_index=True)
@@ -171,4 +198,5 @@ else:
     else:
         st.info("You can vote only once. After voting the buttons will be disabled for you.")
 
+# Debug info (optional)
 st.caption(f"Internal reset_version: {int(r.get(RESET_KEY) or 0)}")
