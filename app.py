@@ -5,7 +5,7 @@ Streamlit one-time voter app (Redis-backed)
 - Voting updates counts and the stored per-name choice (handles switching vote)
 - Reset Counts: zeros numeric counters, sets all names -> 'none' (names preserved)
 - Reset ALL: full wipe (counts + names) and unlock everyone
-Layout: keep current format but align buttons properly (vote buttons left/center, control panel right)
+Layout: preserve your screenshot format; fix alignment; remove unnecessary reruns to avoid click lag
 """
 import streamlit as st
 import redis
@@ -31,8 +31,8 @@ if r.get(RESET_KEY) is None:
 
 # ---------- Streamlit UI ----------
 st.set_page_config(page_title="Live Voter", layout="centered")
-# auto-refresh every 2 seconds
-st_autorefresh(interval=2000, key="refresh_counter")
+# auto-refresh every 4 seconds (reduced clash with clicks)
+st_autorefresh(interval=4000, key="refresh_counter")
 
 st.title("Voter App")
 
@@ -57,7 +57,6 @@ def get_counts_and_table():
     if rows:
         df = pd.DataFrame(rows)
     else:
-        # empty df with columns to avoid downstream issues
         df = pd.DataFrame(columns=["Name", "YES", "NO"])
     return yes, no, df
 
@@ -118,9 +117,14 @@ def reset_all():
 if not st.session_state.voter_name:
     name_col, set_col = st.columns([3, 1])
     with name_col:
-        name_input = st.text_input("Enter your name to participate", key="voter_name_input", placeholder="Type your full name")
+        name_input = st.text_input(
+            "Enter your name to participate",
+            key="voter_name_input",
+            placeholder="Type your full name"
+        )
     with set_col:
-        if st.button("Set Name"):
+        # keep a specific key for this button
+        if st.button("Set Name", key="set_name_btn"):
             if name_input and name_input.strip():
                 cleaned = name_input.strip()
                 st.session_state.voter_name = cleaned
@@ -130,7 +134,7 @@ if not st.session_state.voter_name:
                 st.session_state.voted = False
                 st.session_state.voted_choice = None
                 st.session_state.last_reset_version = int(r.get(RESET_KEY) or 0)
-                st.experimental_rerun()
+                # no explicit rerun required; Streamlit will rerun after button press
             else:
                 st.warning("Please type a valid name before setting it.")
 else:
@@ -158,39 +162,33 @@ if st.session_state.voter_name:
 vote_col1, vote_col2, control_col = st.columns([1, 1, 1])
 
 with vote_col1:
-    # large square-style button (keeps format)
-    if st.button("✅", use_container_width=True, disabled=has_voted or not st.session_state.voter_name):
+    # button has a unique key; no rerun call after click
+    if st.button("✅", key="yes_btn", use_container_width=True, disabled=has_voted or not st.session_state.voter_name):
         cast_vote(st.session_state.voter_name, "yes")
         st.session_state.voted = True
         st.session_state.voted_choice = "yes"
         st.session_state.last_reset_version = int(r.get(RESET_KEY) or 0)
-        st.experimental_rerun()
     st.metric("Yes", yes_count)
 
 with vote_col2:
-    if st.button("❌", use_container_width=True, disabled=has_voted or not st.session_state.voter_name):
+    if st.button("❌", key="no_btn", use_container_width=True, disabled=has_voted or not st.session_state.voter_name):
         cast_vote(st.session_state.voter_name, "no")
         st.session_state.voted = True
         st.session_state.voted_choice = "no"
         st.session_state.last_reset_version = int(r.get(RESET_KEY) or 0)
-        st.experimental_rerun()
     st.metric("No", no_count)
 
 with control_col:
-    # small spacer line so reset buttons align vertically similar to screenshot
+    # small spacer line so reset buttons align vertically like screenshot
     st.markdown("### ")
-    # stacked reset buttons in right column (aligned)
-    if st.button("🔄 Reset Counts", use_container_width=True):
+    # stacked reset buttons in right column (aligned) with unique keys
+    if st.button("🔄 Reset Counts", key="reset_counts_btn", use_container_width=True):
         reset_counts()
         st.success("Counts have been reset and everyone is unlocked (names preserved).")
-        st.experimental_rerun()
-
-    st.markdown(" ")  # small gap between buttons to match screenshot spacing
-
-    if st.button("🔁 Reset ALL", use_container_width=True):
+    st.markdown(" ")
+    if st.button("🔁 Reset ALL", key="reset_all_btn", use_container_width=True):
         reset_all()
         st.success("All cleared: counts reset, names cleared, everyone unlocked.")
-        st.experimental_rerun()
 
 st.markdown("---")
 
