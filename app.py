@@ -6,12 +6,12 @@ One-Time Voter (Redis-backed, Live Counter, Global Reset)
 - Reset clears Redis counters AND globally unlocks all users via a reset_version key
 - Live auto-refresh (every 2s) keeps everyone in sync
 
-Enhancements in this file:
+Enhancements:
 - Ask for voter's name initially and store it in session_state
 - Show votes in a table format per user with YES/NO columns
 - Store each voter's choice in Redis hash (votes:names)
 - Two reset buttons:
-    * "Reset Counts" — resets only the yes/no counters and clears names
+    * "Reset Counts" — resets only the yes/no counters and unlocks everyone, keeps names
     * "Reset All (counts + unlock everyone)" — resets counts, bumps reset_version, clears names, unlocks everyone
 """
 
@@ -118,16 +118,15 @@ with col2:
 
 with col3:
     if st.button("🔄 Reset Counts"):
-        # Reset numeric counters to 0, keep the list of names but clear their choices so table shows zeros.
         r.set(YES_KEY, 0)
         r.set(NO_KEY, 0)
-        # iterate over existing names and set their choice to 'none' so names persist but counts are zero
         existing = r.hgetall(NAMES_HASH_KEY) or {}
         if existing:
             for n in existing.keys():
                 r.hset(NAMES_HASH_KEY, n, "none")
-        # bump reset version to unlock everyone across browsers
         r.incr(RESET_KEY)
+        st.session_state.voted = False
+        st.session_state.voted_choice = None
         st.success("Counts have been reset and everyone is unlocked (names preserved).")
         st.rerun()
 
@@ -135,41 +134,20 @@ with col3:
         r.set(YES_KEY, 0)
         r.set(NO_KEY, 0)
         r.delete(NAMES_HASH_KEY)
-      # Display votes table
-if not votes_df.empty:
-    # Add totals row
-    totals = {"Name": "TOTAL", "YES": yes_count, "NO": no_count}
-    votes_df = pd.concat([votes_df, pd.DataFrame([totals])], ignore_index=True)
-    st.subheader("📊 Votes Table")
-    st.table(votes_df)
-else:
-    st.subheader("📊 No votes yet")
-
-st.markdown("---")
-
-if has_voted:
-    picked = st.session_state.get("voted_choice")
-    if picked == "yes":
-        st.success("You already voted ✅ — thanks for participating!")
-    elif picked == "no":
-        st.success("You already voted ❌ — thanks for participating!")
-    else:
-        st.success("You already voted — thanks for participating!")
-else:
-    if not st.session_state.voter_name:
-        st.info("Please enter your name to vote. You can vote only once per browser session.")
-    else:
-        st.info("You can vote only once. After voting the buttons will be disabled for you.")
-
-st.caption(f"Internal reset_version: {int(r.get(RESET_KEY) or 0)}")t.table(votes_df)
-else:
-    st.subheader("📊 No votes yet")
+        r.incr(RESET_KEY)
+        st.session_state.voted = False
+        st.session_state.voted_choice = None
+        st.session_state.last_reset_version = int(r.get(RESET_KEY))
+        st.session_state.voter_name = ""
+        if "voter_name_input" in st.session_state:
+            del st.session_state["voter_name_input"]
+        st.success("All cleared: counts reset, names cleared, everyone unlocked.")
+        st.rerun()
 
 st.markdown("---")
 
 # Display votes table
 if not votes_df.empty:
-    # Add totals row
     totals = {"Name": "TOTAL", "YES": yes_count, "NO": no_count}
     votes_df = pd.concat([votes_df, pd.DataFrame([totals])], ignore_index=True)
     st.subheader("📊 Votes Table")
@@ -193,5 +171,4 @@ else:
     else:
         st.info("You can vote only once. After voting the buttons will be disabled for you.")
 
-# Debug info (optional)
 st.caption(f"Internal reset_version: {int(r.get(RESET_KEY) or 0)}")
