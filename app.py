@@ -8,9 +8,8 @@ One-Time Voter (Redis-backed, Live Counter, Global Reset)
 
 Enhancements in this file:
 - Ask for voter's name initially and store it in session_state
-- Show the voter's name and the counter (total votes)
-- Store each voter's name in Redis set based on choice (yes_names / no_names)
-- Display list of voter names under each count
+- Show votes in a table format per user with YES/NO columns
+- Store each voter's choice in Redis hash (votes:names)
 - Two reset buttons:
     * "Reset Counts" — resets only the yes/no counters and clears names
     * "Reset All (counts + unlock everyone)" — resets counts, bumps reset_version, clears names, unlocks everyone
@@ -18,6 +17,7 @@ Enhancements in this file:
 
 import streamlit as st
 import redis
+import pandas as pd
 from streamlit_autorefresh import st_autorefresh
 
 # ---------- Redis connection ----------
@@ -27,8 +27,7 @@ r = redis.from_url(REDIS_URL, decode_responses=True)
 YES_KEY = "votes:yes"
 NO_KEY = "votes:no"
 RESET_KEY = "votes:reset_version"
-YES_NAMES_KEY = "votes:yes_names"
-NO_NAMES_KEY = "votes:no_names"
+NAMES_HASH_KEY = "votes:names"  # hash: {name: choice}
 
 # ensure keys exist
 if r.get(YES_KEY) is None:
@@ -77,15 +76,19 @@ if current_reset_version > st.session_state.last_reset_version:
 has_voted = bool(st.session_state.get("voted", False))
 
 # helpers
-def get_counts_and_names():
+def get_counts_and_table():
     yes = int(r.get(YES_KEY) or 0)
     no = int(r.get(NO_KEY) or 0)
-    yes_names = r.smembers(YES_NAMES_KEY) or []
-    no_names = r.smembers(NO_NAMES_KEY) or []
-    return yes, no, yes_names, no_names
+    names_data = r.hgetall(NAMES_HASH_KEY) or {}
+    rows = []
+    for name, choice in names_data.items():
+        yes_val = 1 if choice == "yes" else 0
+        no_val = 1 if choice == "no" else 0
+        rows.append({"Name": name, "YES": yes_val, "NO": no_val})
+    df = pd.DataFrame(rows)
+    return yes, no, df
 
-yes_count, no_count, yes_names, no_names = get_counts_and_names()
-
+yes_count, no_count, votes_df = get_counts_and_table()
 total_votes = yes_count + no_count
 
 if st.session_state.voter_name:
@@ -96,41 +99,35 @@ col1, col2, col3 = st.columns([1, 1, 1])
 with col1:
     if st.button("✅", disabled=has_voted or not st.session_state.voter_name):
         r.incr(YES_KEY)
-        r.sadd(YES_NAMES_KEY, st.session_state.voter_name)
+        r.hset(NAMES_HASH_KEY, st.session_state.voter_name, "yes")
         st.session_state.voted = True
         st.session_state.voted_choice = "yes"
         st.session_state.last_reset_version = int(r.get(RESET_KEY) or 0)
         st.rerun()
     st.metric("Yes", yes_count)
-    if yes_names:
-        st.write(", ".join(yes_names))
 
 with col2:
     if st.button("❌", disabled=has_voted or not st.session_state.voter_name):
         r.incr(NO_KEY)
-        r.sadd(NO_NAMES_KEY, st.session_state.voter_name)
+        r.hset(NAMES_HASH_KEY, st.session_state.voter_name, "no")
         st.session_state.voted = True
         st.session_state.voted_choice = "no"
         st.session_state.last_reset_version = int(r.get(RESET_KEY) or 0)
         st.rerun()
     st.metric("No", no_count)
-    if no_names:
-        st.write(", ".join(no_names))
 
 with col3:
     if st.button("🔄 Reset Counts"):
         r.set(YES_KEY, 0)
         r.set(NO_KEY, 0)
-        r.delete(YES_NAMES_KEY)
-        r.delete(NO_NAMES_KEY)
+        r.delete(NAMES_HASH_KEY)
         st.success("Counts and names have been reset (voter locks preserved).")
         st.rerun()
 
     if st.button("🔁 Reset ALL (counts + unlock everyone)"):
         r.set(YES_KEY, 0)
         r.set(NO_KEY, 0)
-        r.delete(YES_NAMES_KEY)
-        r.delete(NO_NAMES_KEY)
+        r.delete(NAMES_HASH_KEY)
         r.incr(RESET_KEY)
         st.session_state.voted = False
         st.session_state.voted_choice = None
@@ -143,20 +140,13 @@ with col3:
 
 st.markdown("---")
 
-yes_count, no_count, yes_names, no_names = get_counts_and_names()
-total_votes = yes_count + no_count
-
-if total_votes > 0:
-    yes_pct = (yes_count / total_votes) * 100
-    no_pct = (no_count / total_votes) * 100
-    st.subheader(f"📊 Total Votes: {total_votes}")
-    st.progress(min(max(int(round(yes_pct)), 0), 100))
-    st.write(f"✅ Yes: **{yes_count}** ({yes_pct:.1f}%)")
-    if yes_names:
-        st.caption("Yes voters: " + ", ".join(yes_names))
-    st.write(f"❌ No: **{no_count}** ({no_pct:.1f}%)")
-    if no_names:
-        st.caption("No voters: " + ", ".join(no_names))
+# Display votes table
+if not votes_df.empty:
+    # Add totals row
+    totals = {"Name": "TOTAL", "YES": yes_count, "NO": no_count}
+    votes_df = pd.concat([votes_df, pd.DataFrame([totals])], ignore_index=True)
+    st.subheader("📊 Votes Table")
+    st.table(votes_df)
 else:
     st.subheader("📊 No votes yet")
 
