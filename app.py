@@ -167,6 +167,18 @@ else:
 
 st.markdown("---")
 
+# Display votes table
+if not votes_df.empty:
+    # Add totals row
+    totals = {"Name": "TOTAL", "YES": yes_count, "NO": no_count}
+    votes_df = pd.concat([votes_df, pd.DataFrame([totals])], ignore_index=True)
+    st.subheader("📊 Votes Table")
+    st.table(votes_df)
+else:
+    st.subheader("📊 No votes yet")
+
+st.markdown("---")
+
 if has_voted:
     picked = st.session_state.get("voted_choice")
     if picked == "yes":
@@ -181,4 +193,5 @@ else:
     else:
         st.info("You can vote only once. After voting the buttons will be disabled for you.")
 
+# Debug info (optional)
 st.caption(f"Internal reset_version: {int(r.get(RESET_KEY) or 0)}")
