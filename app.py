@@ -28,12 +28,12 @@ if r.get(NO_KEY) is None:
 if r.get(RESET_KEY) is None:
     r.set(RESET_KEY, 0)
 
-# ---------- Streamlit UI ----------
+# ---------- Streamlit UI -------- --
 st.set_page_config(page_title="Live Voter", layout="centered")
 # auto-refresh every 3 seconds
 st_autorefresh(interval=3000, key="refresh_counter")
 
-st.title("Voter App")
+st.title("Voter App 🧮")
 
 # local/session flags
 st.session_state.setdefault("voted", False)
