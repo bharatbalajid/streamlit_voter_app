@@ -38,7 +38,7 @@ st.title("Voter App 🧮")
 # local/session flags
 st.session_state.setdefault("voted", False)
 st.session_state.setdefault("voted_choice", None)
-st.session_state.setdefault("last_reset_version", 0)
+# st.session_state.setdefault("last_reset_version", 0)
 st.session_state.setdefault("voter_name", "")
 
 # ---------- Name input ----------
