@@ -9,9 +9,11 @@ One-Time Voter (Redis-backed, Live Counter, Global Reset)
 Enhancements in this file:
 - Ask for voter's name initially and store it in session_state
 - Show the voter's name and the counter (total votes)
+- Store each voter's name in Redis set based on choice (yes_names / no_names)
+- Display list of voter names under each count
 - Two reset buttons:
-    * "Reset Counts" — resets only the yes/no counters (keeps per-browser vote locks and names)
-    * "Reset All (counts + unlock everyone)" — resets counts, bumps reset_version to unlock everyone, and clears this browser's stored name and vote flags
+    * "Reset Counts" — resets only the yes/no counters and clears names
+    * "Reset All (counts + unlock everyone)" — resets counts, bumps reset_version, clears names, unlocks everyone
 """
 
 import streamlit as st
@@ -25,6 +27,8 @@ r = redis.from_url(REDIS_URL, decode_responses=True)
 YES_KEY = "votes:yes"
 NO_KEY = "votes:no"
 RESET_KEY = "votes:reset_version"
+YES_NAMES_KEY = "votes:yes_names"
+NO_NAMES_KEY = "votes:no_names"
 
 # ensure keys exist
 if r.get(YES_KEY) is None:
@@ -57,7 +61,6 @@ if not st.session_state.voter_name:
         if st.button("Set Name"):
             if name_input and name_input.strip():
                 st.session_state.voter_name = name_input.strip()
-                # On setting name, we don't change vote locks. Just rerun to update UI.
                 st.rerun()
             else:
                 st.warning("Please type a valid name before setting it.")
@@ -67,7 +70,6 @@ else:
 # check global reset version
 current_reset_version = int(r.get(RESET_KEY) or 0)
 if current_reset_version > st.session_state.last_reset_version:
-    # a reset happened globally → unlock this browser session
     st.session_state.voted = False
     st.session_state.voted_choice = None
     st.session_state.last_reset_version = current_reset_version
@@ -75,16 +77,17 @@ if current_reset_version > st.session_state.last_reset_version:
 has_voted = bool(st.session_state.get("voted", False))
 
 # helpers
-def get_counts():
+def get_counts_and_names():
     yes = int(r.get(YES_KEY) or 0)
     no = int(r.get(NO_KEY) or 0)
-    return yes, no
+    yes_names = r.smembers(YES_NAMES_KEY) or []
+    no_names = r.smembers(NO_NAMES_KEY) or []
+    return yes, no, yes_names, no_names
 
-yes_count, no_count = get_counts()
+yes_count, no_count, yes_names, no_names = get_counts_and_names()
 
 total_votes = yes_count + no_count
 
-# Show a small summary with the voter's name and total counter value
 if st.session_state.voter_name:
     st.write(f"**Your Name:** {st.session_state.voter_name}  —  **Total Votes:** {total_votes}")
 
@@ -93,52 +96,54 @@ col1, col2, col3 = st.columns([1, 1, 1])
 with col1:
     if st.button("✅", disabled=has_voted or not st.session_state.voter_name):
         r.incr(YES_KEY)
+        r.sadd(YES_NAMES_KEY, st.session_state.voter_name)
         st.session_state.voted = True
         st.session_state.voted_choice = "yes"
-        # We update last_reset_version in case something changed while voting
         st.session_state.last_reset_version = int(r.get(RESET_KEY) or 0)
         st.rerun()
     st.metric("Yes", yes_count)
+    if yes_names:
+        st.write(", ".join(yes_names))
 
 with col2:
     if st.button("❌", disabled=has_voted or not st.session_state.voter_name):
         r.incr(NO_KEY)
+        r.sadd(NO_NAMES_KEY, st.session_state.voter_name)
         st.session_state.voted = True
         st.session_state.voted_choice = "no"
         st.session_state.last_reset_version = int(r.get(RESET_KEY) or 0)
         st.rerun()
     st.metric("No", no_count)
+    if no_names:
+        st.write(", ".join(no_names))
 
 with col3:
-    # Two separate reset buttons
     if st.button("🔄 Reset Counts"):
-        # reset only the counters; do NOT change reset_version so vote locks and names remain
         r.set(YES_KEY, 0)
         r.set(NO_KEY, 0)
-        st.success("Counts have been reset (voter locks preserved).")
+        r.delete(YES_NAMES_KEY)
+        r.delete(NO_NAMES_KEY)
+        st.success("Counts and names have been reset (voter locks preserved).")
         st.rerun()
 
     if st.button("🔁 Reset ALL (counts + unlock everyone)"):
-        # clear Redis counters
         r.set(YES_KEY, 0)
         r.set(NO_KEY, 0)
-        # bump reset version so all users auto-unlock
+        r.delete(YES_NAMES_KEY)
+        r.delete(NO_NAMES_KEY)
         r.incr(RESET_KEY)
-        # also unlock and clear this session's name right away
         st.session_state.voted = False
         st.session_state.voted_choice = None
         st.session_state.last_reset_version = int(r.get(RESET_KEY))
         st.session_state.voter_name = ""
-        # clear the text input (if present) as well
         if "voter_name_input" in st.session_state:
             del st.session_state["voter_name_input"]
-        st.success("All cleared: counts reset, everyone unlocked, and your name cleared for this browser.")
+        st.success("All cleared: counts reset, names cleared, everyone unlocked.")
         st.rerun()
 
 st.markdown("---")
 
-# fresh counts
-yes_count, no_count = get_counts()
+yes_count, no_count, yes_names, no_names = get_counts_and_names()
 total_votes = yes_count + no_count
 
 if total_votes > 0:
@@ -147,7 +152,11 @@ if total_votes > 0:
     st.subheader(f"📊 Total Votes: {total_votes}")
     st.progress(min(max(int(round(yes_pct)), 0), 100))
     st.write(f"✅ Yes: **{yes_count}** ({yes_pct:.1f}%)")
+    if yes_names:
+        st.caption("Yes voters: " + ", ".join(yes_names))
     st.write(f"❌ No: **{no_count}** ({no_pct:.1f}%)")
+    if no_names:
+        st.caption("No voters: " + ", ".join(no_names))
 else:
     st.subheader("📊 No votes yet")
 
@@ -163,9 +172,8 @@ if has_voted:
         st.success("You already voted — thanks for participating!")
 else:
     if not st.session_state.voter_name:
-        st.info("Please enter your name to vote. You can vote only once per browser session. After voting the buttons will be disabled for you.")
+        st.info("Please enter your name to vote. You can vote only once per browser session.")
     else:
         st.info("You can vote only once. After voting the buttons will be disabled for you.")
 
-# Footer: show current reset version (useful for debugging)
 st.caption(f"Internal reset_version: {int(r.get(RESET_KEY) or 0)}")
