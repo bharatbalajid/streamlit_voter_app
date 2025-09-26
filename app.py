@@ -114,27 +114,27 @@ def reset_all():
     if "voter_name_input" in st.session_state:
         del st.session_state["voter_name_input"]
 
-# ---------- Name input (inline) ----------
-name_col, set_col = st.columns([3, 1])
-with name_col:
-    name_input = st.text_input("Enter your name to participate", key="voter_name_input", placeholder="Type your full name")
-with set_col:
-    if st.button("Set Name"):
-        if name_input and name_input.strip():
-            cleaned = name_input.strip()
-            st.session_state.voter_name = cleaned
-            # create user in Redis with no vote yet so they appear in the table
-            r.hset(NAMES_HASH_KEY, cleaned, "none")
-            # sync reset_version to avoid immediate unexpected unlock state
-            st.session_state.voted = False
-            st.session_state.voted_choice = None
-            st.session_state.last_reset_version = int(r.get(RESET_KEY) or 0)
-            st.rerun()
-        else:
-            st.warning("Please type a valid name before setting it.")
-
-# greet if name set
-if st.session_state.voter_name:
+# ---------- Name input (inline, only if not set) ----------
+if not st.session_state.voter_name:
+    name_col, set_col = st.columns([3, 1])
+    with name_col:
+        name_input = st.text_input("Enter your name to participate", key="voter_name_input", placeholder="Type your full name")
+    with set_col:
+        if st.button("Set Name"):
+            if name_input and name_input.strip():
+                cleaned = name_input.strip()
+                st.session_state.voter_name = cleaned
+                # create user in Redis with no vote yet so they appear in the table
+                r.hset(NAMES_HASH_KEY, cleaned, "none")
+                # sync reset_version to avoid immediate unexpected unlock state
+                st.session_state.voted = False
+                st.session_state.voted_choice = None
+                st.session_state.last_reset_version = int(r.get(RESET_KEY) or 0)
+                st.experimental_rerun()
+            else:
+                st.warning("Please type a valid name before setting it.")
+else:
+    # When name already set → just greet, no input or button
     st.markdown(f"**Hello — {st.session_state.voter_name}**")
 
 # check global reset version (auto-unlock if bumped externally)
@@ -164,7 +164,7 @@ with vote_col1:
         st.session_state.voted = True
         st.session_state.voted_choice = "yes"
         st.session_state.last_reset_version = int(r.get(RESET_KEY) or 0)
-        st.rerun()
+        st.experimental_rerun()
     st.metric("Yes", yes_count)
 
 with vote_col2:
@@ -173,24 +173,24 @@ with vote_col2:
         st.session_state.voted = True
         st.session_state.voted_choice = "no"
         st.session_state.last_reset_version = int(r.get(RESET_KEY) or 0)
-        st.rerun()
+        st.experimental_rerun()
     st.metric("No", no_count)
 
 with control_col:
     # small spacer line so reset buttons align vertically similar to screenshot
     st.markdown("### ")
-    # use stacking: sequential buttons inside the right column will appear vertically aligned
+    # stacked reset buttons in right column (aligned)
     if st.button("🔄 Reset Counts", use_container_width=True):
         reset_counts()
         st.success("Counts have been reset and everyone is unlocked (names preserved).")
-        st.rerun()
+        st.experimental_rerun()
 
     st.markdown(" ")  # small gap between buttons to match screenshot spacing
 
     if st.button("🔁 Reset ALL", use_container_width=True):
         reset_all()
         st.success("All cleared: counts reset, names cleared, everyone unlocked.")
-        st.rerun()
+        st.experimental_rerun()
 
 st.markdown("---")
 
