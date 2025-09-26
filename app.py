@@ -30,8 +30,8 @@ if r.get(RESET_KEY) is None:
 
 # ---------- Streamlit UI ----------
 st.set_page_config(page_title="Live Voter", layout="centered")
-# auto-refresh every 2 seconds
-st_autorefresh(interval=2000, key="refresh_counter")
+# auto-refresh every 3 seconds
+st_autorefresh(interval=3000, key="refresh_counter")
 
 st.title("Voter App")
 
