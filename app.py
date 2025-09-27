@@ -38,14 +38,16 @@ st.title("Voter App 🧮")
 # local/session flags
 st.session_state.setdefault("voted", False)
 st.session_state.setdefault("voted_choice", None)
-# st.session_state.setdefault("last_reset_version", 0)
 st.session_state.setdefault("voter_name", "")
+# IMPORTANT: ensure last_reset_version always exists to avoid AttributeError
+st.session_state.setdefault("last_reset_version", int(r.get(RESET_KEY) or 0))
 
 # ---------- Name input ----------
 # If a user sets their name, create an entry in Redis immediately with choice 'none'
 if not st.session_state.voter_name:
     name_col1, name_col2 = st.columns([3, 1])
     with name_col1:
+        # use a distinct key for the text_input so we can control when name is applied
         name_input = st.text_input("Enter your name to participate", key="voter_name_input")
     with name_col2:
         if st.button("Set Name"):
@@ -66,7 +68,8 @@ else:
 
 # check global reset version (auto-unlock if bumped)
 current_reset_version = int(r.get(RESET_KEY) or 0)
-if current_reset_version > st.session_state.last_reset_version:
+# use .get() to be defensive in case something odd happens with session_state
+if current_reset_version > st.session_state.get("last_reset_version", int(r.get(RESET_KEY) or 0)):
     st.session_state.voted = False
     st.session_state.voted_choice = None
     st.session_state.last_reset_version = current_reset_version
